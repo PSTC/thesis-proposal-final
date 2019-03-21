@@ -1,0 +1,272 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{comment}
+\usepackage{multicol}
+\usepackage{minted}
+\usepackage{hyperref}
+\newcommand{\sub}[1]{\textsubscript{#1}}
+\newcommand{\CIChat}{CIC$\widehat{~}$\ }
+\newcommand{\CIChatbar}{CIC$\widehat{\underline{~}}$\ }
+\newcommand{\Fhat}{F$\widehat{~}$\ }
+
+\title{CPSC 449 Honours Thesis Proposal}
+\author{Jonathan Chan}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+Coq and other dependently-typed proof assistants rely on termination-checking to ensure soundness of proofs. Unfortunately, the current termination checkers are fragile and sensitive to the syntactic structure of code rather than the algorithm it computes. We propose to make them more robust and intuitive by using \textit{sized types}.
+
+\subsection{Termination in Coq} \label{coq-termination}
+Part of what makes Coq's termination checker fragile and unintuitive is that it requires that recursive functions are \textit{guarded by destructors} \cite{gimenez}. This requires that the argument to a recursive call must be a structurally-recursive component of the corresponding parameter of the function, guaranteeing that recursive calls occur only on ever-smaller inductive terms. For example, given a definition of the natural numbers as the following:
+
+\begin{minted}{coq}
+Inductive Nat :=
+  | O: Nat          (* zero *)
+  | S: Nat -> Nat.  (* + 1  *)
+\end{minted}
+
+The following function \texttt{shrink} is accepted by Coq, as \texttt{m} is a component of \texttt{n = S m}, but \texttt{grow} is not accepted.
+
+\begin{multicols}{2}
+\begin{minted}{coq}
+Fixpoint shrink n :=
+  match n with
+    | O   => O
+    | S m => shrink m
+  end.
+\end{minted}
+
+\begin{minted}{coq}
+Fixpoint grow n := grow (S n).
+\end{minted}
+
+\begin{verbatim}
+
+
+\end{verbatim}
+\end{multicols}
+
+Calls to other functions inside a recursive call are \textit{unfolded} by replacing them with their definitions as needed when performing the termination check. For instance, if \texttt{shrink} were instead defined as follows:
+
+\hypertarget{shrink}{}
+\begin{multicols}{2}
+\begin{minted}{coq}
+Fixpoint shrink n :=
+  match n with
+  | O   => O
+  | S m => shrink (ident m)
+  end.
+\end{minted}
+\begin{minted}{coq}
+Definition ident n :=
+  match n with
+  | O   => n
+  | S m => n
+  end.
+\end{minted}
+\end{multicols}
+
+Unfolding might lead to:
+
+\begin{minted}{coq}
+Fixpoint shrink' n :=
+  match n with
+  | O    => O
+  | S n' =>
+    match n' with
+    | O   => shrink' n'
+    | S m => shrink' n'
+    end
+  end.
+\end{minted}
+
+Coq accepts this since \texttt{n'} is a component of \texttt{n = S n'}. However, suppose we defined \texttt{ident} as the following:
+
+\begin{minted}{coq}
+Definition ident n :=
+  match n with
+  | O   => O
+  | S m => S m
+  end.
+\end{minted}
+
+Then the recursive calls in \texttt{shrink} would be \texttt{shrink O} and \texttt{shrink (S m)}, but Coq does not accept this since \texttt{O} and \texttt{S m} are not explicitly structurally-smaller components of \texttt{n}. Thus the termination checker is fragile in that slightly changing the definition of \texttt{ident} in a semantically-equivalent way breaks the acceptance of the program, and is unintuitive in that users need to understand details of how the termination checker works in order to choose the correct definition of \texttt{ident} that will be accepted despite the two being semantically equivalent.
+
+\subsection{Termination-Checking using Sized Types}\label{sized-types}
+The key idea behind structural termination checking is that inductive objects have some size to them and that recursive calls are done on objects with a smaller size. Sized types \cite{hughes} formalizes this notion of size and separates it from the structure of the object, instead attaching size information to its type. The size of a type counts the maximum number of layers of constructors that objects of that type have. For instance, for objects of type \texttt{Nat}, the sized type $\texttt{Nat}_i$ would contain all natural numbers less than $i$. Equivalently, an object with $i$ layers of constructors has type of size at least $i$, so we would have:
+
+\begin{alignat*}{2}
+    \texttt{O: }        &\texttt{Nat}_1, \texttt{Nat}_2, \texttt{Nat}_3, \dots\\
+    \texttt{S O: }      &\texttt{Nat}_2, \texttt{Nat}_3, \dots\\
+    \texttt{S (S O): }  &\texttt{Nat}_3, \dots\\
+\end{alignat*}
+
+And so on, with $\texttt{Nat}_\infty$ being the type of \textit{all} natural numbers. Similarly, if we define polymorphic lists as follows:
+
+\hypertarget{list}{}
+\begin{minted}[escapeinside=@@]{coq}
+Inductive List t :=
+  | Nil: List@$_1$@ t
+  | Cons: @$\forall i$@. t -> List@$_i$@ t -> List@$_{i + 1}$@ t.
+\end{minted}
+
+Giving objects as precise a type as possible by choosing the smallest allowable size, lists of zeroes would then have types:
+
+\begin{alignat*}{2}
+    &\texttt{Nil: }                  &\texttt{List}_1\ \texttt{Nat}\\
+    &\texttt{Cons O Nil: }           &\texttt{List}_2\ \texttt{Nat}\\
+    &\texttt{Cons O (Cons O Nil): }  &\texttt{List}_3\ \texttt{Nat}
+\end{alignat*}
+
+Constructor and function types are annotated with size indices (like \texttt{Cons} above), which can only be size variables, sums of size variables, constant multiples of size variables, or $\infty$. As an example, the type of a function that appends two lists might be:
+
+\hypertarget{append}{}
+$$\texttt{append: } \forall i, j.\ \forall \texttt{t}.\ \texttt{List}_i\ \texttt{t} \rightarrow \texttt{List}_{j + 1}\ \texttt{t} \rightarrow \texttt{List}_{i + j}\ \texttt{t}$$
+
+Notice that the size of the type of the resulting list is one smaller than the sum of the sizes of the input lists since each input list ends in a \texttt{Nil} constructor and the appended list only needs one \texttt{Nil}. Functions that produce values whose type sizes cannot be expressed in terms of additions or constant multiples would require a return type indexed by $\infty$, such as the \texttt{factorial} function.
+
+$$\texttt{factorial: } \forall i.\ \texttt{Nat}_i \rightarrow \texttt{Nat}_\infty$$
+
+Termination checking is then done by ensuring that the type of the argument to a recursive call has a sized type smaller than that of the parameter of the function. For instance, the types of \texttt{shrink} and \texttt{ident} from \hyperlink{shrink}{section~\ref*{coq-termination}} would be:
+
+\begin{alignat*}{2}
+    \texttt{shrink: } &\forall i.\ \texttt{Nat}_i \rightarrow \texttt{Nat}_1\\
+    \texttt{ident: }  &\forall i.\ \texttt{Nat}_i \rightarrow \texttt{Nat}_i
+\end{alignat*}
+
+Suppose that we assume the type of the argument \texttt{n} of \texttt{shrink} to be $\texttt{Nat}_{i+1}$. Then the component \texttt{m} would have type $\texttt{Nat}_i$, the value from \texttt{ident m} would also have type $\texttt{Nat}_i$, and the argument to the recursive call is indeed smaller. Notice that we were able to determine this without needing to unfold the definition of \texttt{ident}; as long as size constraints are satisfied, termination is ensured. Since size indices are linear integer polynomials of size variables, solving these constraints is implemented as solving a system of integer linear inequalities, which can be done in $O(mn^2)$ \cite{omega}, where $m$ is the number of constraints and $n$ is the number of size variables.
+
+\subsection{Inferring Sizes with Successor Sized Types}\label{successor}
+With sized types, structural termination checking is replaced by sized termination checking, reducing the fragility of the checker and easing reasoning about the termination of programs. However, it introduces the burden of size annotation on the user, who must now learn to add sizes to the types of functions correctly and with sufficient precision. It would be far preferable to have size information inferred rather than be specified by annotations to maintain usability. To do this, we can restrict the arithmetic on size variables to only three families of size indices: arbitrary sizes variables $s$ for finite sizes, their successors $\hat{s}$, and $\infty$ \cite{f-hat, cic-hat, cic-hat-bar}. With these families, the return type of constructors must have a successor size $\hat{s}$, while its recursive arguments must have a type with base size $s$. For example, \texttt{Cons} from \hyperlink{list}{section~\ref*{sized-types}} now has the type:
+
+$$\texttt{Cons: } \forall s.\ \forall \texttt{t}.\ \texttt{t} \rightarrow \texttt{List}_s \rightarrow \texttt{List}_{\hat{s}}$$
+
+A significant disadvantage of allowing only a successor function on size variables and removing addition is that it reduces the precision of the types of functions. For instance, append from \hyperlink{append}{section~\ref*{sized-types}} now has the type:
+
+$$\texttt{append: } \forall s, r.\ \forall \texttt{t}.\ \texttt{List}_s\ \texttt{t} \rightarrow \texttt{List}_{r}\ \texttt{t} \rightarrow \texttt{List}_\infty\ \texttt{t}$$
+
+Nevertheless, \texttt{append} remains typeable and passes sized termination checking, as do \texttt{shrink} and \texttt{ident}, which now have the following types:
+
+\begin{alignat*}{2}
+    \texttt{shrink: } &\forall s.\ \texttt{Nat}_s \rightarrow \texttt{Nat}_s\\
+    \texttt{ident: }  &\forall s.\ \texttt{Nat}_s \rightarrow \texttt{Nat}_s
+\end{alignat*}
+
+Reasoning about their termination follows similarly:
+
+\begin{enumerate}
+    \item The argument \texttt{n} to \texttt{shrink} is assumed to have type $\texttt{Nat}_{\hat{s}}$.
+    \item The component \texttt{m} must have type $\texttt{Nat}_s$.
+    \item By its function type and the type of its argument, the value from \texttt{ident m} must have type $\texttt{Nat}_s$.
+\end{enumerate}
+
+Then the argument to the recursive call in \texttt{shrink} has a sized type smaller than the parameter of the function. Notably, this procedure is done entirely \textit{without} explicit size annotations -- the sizes of the function types are all inferred. Furthermore, solving the size constraints of successor sizes is also more efficient and can be done in $O(n^2)$ time \cite{f-hat}, where $n$ is again the number of size variables.
+
+\subsubsection{Example: Quicksort}
+
+The benefit of sized types is not restricted to reducing the fragility of termination checking. Terminating recursive functions which are not accepted using structural termination checking may instead be accepting when using sized termination checking. Consider the following implementation of quicksort:
+
+\begin{multicols}{2}
+\begin{minted}{coq}
+Fixpoint filter {X} (p: X -> bool) l :=
+  match l with
+  | nil => nil
+  | h :: t =>
+    if   p h
+    then h :: filter p t
+    else filter p t
+  end.
+\end{minted}
+
+\begin{minted}{coq}
+Fixpoint quicksort l :=
+  match l with
+  | nil => nil
+  | h :: t =>
+    quicksort (filter (<=? h) t) ++ 
+    h :: quicksort (filter (>? h) t)
+  end.
+\end{minted}
+\end{multicols}
+
+By inspection, we can see that \texttt{quicksort} is terminating, but this definition is not accepted by Coq because it expects the recursive call to take \texttt{t} or something structurally smaller than \texttt{t}; it cannot tell that \texttt{filter} will return something structurally equal or smaller in size without being provided a proof. On the other hand, these functions can be assigned successor sized types as follows:
+
+$$\texttt{filter: } \forall s.\ \forall \texttt{t}.\ (\texttt{t} \rightarrow \texttt{Bool}) \rightarrow \texttt{List}_s\ \texttt{t} \rightarrow \texttt{List}_s\ \texttt{t}$$
+$$\texttt{quicksort: } \forall s.\ \texttt{List}_s\ \texttt{Nat} \rightarrow \texttt{List}_\infty\ \texttt{Nat}$$
+
+Notice that \texttt{filter} terminates because if \texttt{l} has size $\hat{s}$, then \texttt{t} must have size $s$. Then \texttt{quicksort} also terminates, since if \texttt{l} has size $\hat{s}$, then \texttt{t} must have size $s$, and by the type of \texttt{filter}, the argument to the recursive call of \texttt{quicksort} also has size $s$. Again, these annotations are inferred by the termination checker, so no additional code is required.
+
+\subsection{Objectives}
+
+The goal of this thesis is to reduce the fragility and the complexity of Coq's termination checker by implementing successor sized types in a non-trivial subset of Coq, replacing the existing syntactic termination checking. We will follow the typing and sizing rules in \cite{cic-hat-bar} and implement size inference using the algorithms presented its preceding works \cite{f-hat, cic-hat}. This will reduce the task of termination-checking to type-checking and solving size constraints without requiring any additional user annotations, and accept some additional terminating recursive functions which may not currently be accepted by Coq.
+
+\subsection{Timeline}
+\begin{tabular}{|l|l|}
+    \hline
+    \textbf{Task} & \textbf{Month (2019)} \\
+    \hline
+    Set up development environment and become familiar with codebase & May\\
+    Add size fields to internal representation & June \\
+    Implement size inference algorithm & July \\
+    Modify termination checker to use sized types & September \\
+    Final fixes and wrap-up & November \\
+    Write-up & mid-November \\
+    \hline
+\end{tabular}
+
+\begin{comment}
+\section{Extensions Beyond Scope}
+\begin{itemize}
+    \item Implementing translation of existing Coq code to a form that will work with sized types termination checking (since not all code would be able to be typed).
+    \item Ensuring productivity of coinductive data and corecursive functions using sized types \cite{coinductive}.
+    \item Enhancing successor-only sized types with addition using sized products \cite{sizedproducts}. See also \cite{chin}.
+\end{itemize}
+\end{comment}
+
+\bibliographystyle{plain}
+\bibliography{biblio.bib}
+\end{document}
+
+merge: forall i, j. forall t. List{i + 1} t -> List{j + 1} t -> List{i + j + 1} t
+branch 1: i     -> j + 1 -> i + j
+branch 2: i + 1 -> i     -> i + j
+
+merge: forall s, r. forall t. List{^s} t -> List{^r} t -> List{inf} t
+
+\CIChatbar requires that an explicit recursive argument be annotated with *, but how does it know which one?
+
+Fixpoint grow2 n m :=
+    if   (n < m)
+    then grow2 (n + 1) (m - 1)
+    else grow2 (n - 1) (m + 1)
+    
+Doesn't shrink in a single argument, doesn't terminate, but this does terminate:
+
+\begin{minted}{coq}
+Fixpoint merge l1 l2 :=
+   match l1, l2 with
+   | [], _ => l2
+   | _, [] => l1
+   | a1::l1', a2::l2' =>
+       if a1 <=? a2 then a1 :: merge l1' l2 else a2 :: merge l1 l2'
+   end.
+\end{minted}
+
+Maybe check that at least one argument strictly decreases, all other arguments must be nonincreasing? But then this won't be accepted:
+
+Fixpoint shrink n m k :=
+    match n with
+    | O => k
+    | S n' =>
+        match m with
+        | O => k
+        | S m' =>
+            if   n' < m'
+            then shrink n m' (k + 1)
+            else shrink n' m (k + 1)
